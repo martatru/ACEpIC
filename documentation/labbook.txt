@@ -1,1 +1,95 @@
 ACEpIC: Angiotensin-Converting Enzyme peptide Inhibitory Concentration Predictor
+
+================================================================================
+ACEpIC: Architectural Enhancements & Methodology Specification
+Continuous pIC50 Bioactivity Regression for Peptide Design
+================================================================================
+
+1. OVERVIEW & METHODOLOGICAL ETHICAL STANDARDS
+--------------------------------------------------------------------------------
+Adapting and enhancing established machine learning architectures—such as
+transitioning pLM4ACE from a binary classification model into a continuous pIC50
+regression pipeline—is a standard, scientifically rigorous, and fully ethical
+practice in computational biology and computer science.
+
+By properly attributing foundational works (e.g., the pLM4ACE framework) and
+clearly highlighting novelty, novel loss functions, and structural integrations,
+this project constitutes an original and high-value research contribution.
+
+2. STATE-OF-THE-ART (SOTA) ARCHITECTURAL ENHANCEMENTS
+--------------------------------------------------------------------------------
+To convert a binary active/inactive classifier into a high-precision continuous
+pIC50 regression framework [where pIC50 = -log10(IC50 in M)], five key modular
+upgrades are integrated based on recent deep learning advances:
+
+2.1 Backbone Modernization (Next-Gen Protein Language Models)
+    * Beyond ProtBERT: Replacing legacy protein language models (pLMs) with state-of-
+      the-art embeddings.
+    * ESM-2 (esm2_t33_650M_UR50D): Provides significantly richer biological, structural,
+      and evolutionary representations across amino acid sequences.
+    * ProstT5: Generates dual sequence-structure embeddings by predicting Foldseek
+      structural tokens alongside sequence tokens. This provides implicit 3D geometric
+      awareness without requiring computationally expensive AlphaFold structures.
+
+2.2 Hybrid Architecture: Sequence + Structure (pLM + GNN)
+    * Addressing Representation Blind Spots: Sequence-only pLMs miss explicit 3D
+      conformational and topological spatial details critical for IC50 precision.
+    * Implementation Pipeline:
+      1. Extract per-residue sequence embeddings using ESM-2.
+      2. Construct a peptide molecular graph (Nodes = residues/atoms; Edges = bonds
+         or spatial distance cutoffs).
+      3. Pass the graph representation through a Graph Attention Network (GAT) or
+         Graph Convolutional Network (GCN).
+      4. Concatenate pLM sequence vectors with GNN structural vectors prior to
+         the final regression head.
+
+2.3 Dual-Channel Interaction Modeling (Proteochemometrics & Cross-Attention)
+    * Context-Aware Bioactivity: IC50 values describe binding affinity toward a
+      specific biological target (e.g., ACE enzyme). Sequence-only models predict
+      target-averaged values.
+    * Dual-Encoder Innovation:
+      1. Encoder 1 processes the candidate peptide sequence.
+      2. Encoder 2 processes the target protein sequence or binding pocket.
+    * Mechanism: A Cross-Attention layer is deployed to dynamically learn residue-level
+      pairwise interaction maps between peptide motifs and target binding sites.
+
+2.4 Hybrid Loss Function: Precision & Ranking Optimization
+    * Beyond Standard MSE: Standard Mean Squared Error (MSE) optimizes purely for
+      absolute numerical error. In drug discovery, correct relative ranking (potency
+      ordering) is often more valuable than exact numerical values.
+    * Formulation: Combine MSE with a pairwise ranking loss (Concordance Index Loss
+      or Pairwise Margin Loss):
+
+      Loss_total = α * Loss_MSE + (1 - α) * Loss_ranking
+
+      (where α ∈ [0, 1] balances numerical error and ranking consistency).
+
+2.5 Uncertainty Quantification (UQ)
+    * Overcoming Overconfidence: Deep neural networks tend to yield overconfident
+      point estimates even on out-of-distribution (OOD) test data.
+    * Innovation: Integrate Monte Carlo Dropout (MC Dropout) or Evidential Deep
+      Regression into the head architecture.
+    * Output: The network outputs both a predicted potency mean (μ = pIC50) and
+      an estimated variance/standard deviation (± σ), delivering actionable confidence
+      bounds for experimental validation.
+
+3. PROPOSED ABLATION STUDY PLAN
+--------------------------------------------------------------------------------
+To rigorously validate each architectural component, the following experimental
+ablation design is established:
+
++---------------+----------+-------------------+----------------+---------------------------------------+
+| Model Variant | Backbone | Head Architecture | Loss Function  | Target Metrics & Objectives           |
++---------------+----------+-------------------+----------------+---------------------------------------+
+| Baseline      | ProtBERT | Simple MLP        | MSE            | Reference benchmark                   |
+| Variant A     | ESM-2    | Simple MLP        | MSE            | Evaluates pLM backbone impact         |
+| Variant B     | ESM-2    | CNN + Transformer | MSE            | Evaluates deep head capacity          |
+| Variant C     | ESM-2    | CNN + Transformer | MSE + RankLoss | Evaluates ranking consistency impact  |
++---------------+----------+-------------------+----------------+---------------------------------------+
+
+4. SUMMARY & NEXT STEPS
+--------------------------------------------------------------------------------
+This modular blueprint transforms a basic peptide classification tool into an
+advanced, uncertainty-aware, SOTA continuous pIC50 regression system tailored for
+ACE-inhibitory peptide discovery (ACE-pIC).
+================================================================================
