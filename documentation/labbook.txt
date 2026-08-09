@@ -93,3 +93,20 @@ This modular blueprint transforms a basic peptide classification tool into an
 advanced, uncertainty-aware, SOTA continuous pIC50 regression system tailored for
 ACE-inhibitory peptide discovery (ACE-pIC).
 ================================================================================
+
+[ ETAP 1: Przygotowanie i Ekspansja Danych ]
+                       │
+                       ▼
+ [ ETAP 2: Generowanie Embeddingów (Sekwencja + Struktura) ]
+                       │
+                       ▼
+ [ ETAP 3: Czyszczenie i Audyt Danych (Cleanlab) ]
+                       │
+                       ▼
+ [ ETAP 4: Podział Danych (DataSAIL & Homology-aware Splitting) ]
+                       │
+                       ▼
+ [ ETAP 5: Trenowanie i Eksperymenty z Modelami ML/DL ]
+                       │
+                       ▼
+ [ ETAP 6: Ewaluacja, Wizualizacja i Porównanie (Wykresy & Heatmapa) czyli ablation studies ]
