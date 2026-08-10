@@ -94,10 +94,10 @@ advanced, uncertainty-aware, SOTA continuous pIC50 regression system tailored fo
 ACE-inhibitory peptide discovery (ACE-pIC).
 ================================================================================
 
-[ ETAP 1: Przygotowanie i Ekspansja Danych ]
+[ ETAP 1: Przygotowanie i Ekspansja Danych ] (wziełam dataset z plm4ace czyli zbiór biopep-uwm+ahtpin+publikacje i zupdatowałam o nowe wpisy z biopep dla których był dostepny ic50, z tamtego datasetu wywaliłam te bez ic50)
                        │
                        ▼
- [ ETAP 2: Generowanie Embeddingów (Sekwencja + Struktura) ]
+ [ ETAP 2: Generowanie Embeddingów (Sekwencja + Struktura) ] (protBERT, ESM-2)
                        │
                        ▼
  [ ETAP 3: Czyszczenie i Audyt Danych (Cleanlab) ]
