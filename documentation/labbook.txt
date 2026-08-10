@@ -97,16 +97,16 @@ ACE-inhibitory peptide discovery (ACE-pIC).
 [ ETAP 1: Przygotowanie i Ekspansja Danych ] (wziełam dataset z plm4ace czyli zbiór biopep-uwm+ahtpin+publikacje i zupdatowałam o nowe wpisy z biopep dla których był dostepny ic50, z tamtego datasetu wywaliłam te bez ic50)
                        │
                        ▼
- [ ETAP 2: Generowanie Embeddingów (Sekwencja + Struktura) ] (prott5, ESM-2 trzy wersje, ankh)
+ [ ETAP 2: Generowanie Embeddingów ] (prott5, ESM-2 trzy wersje, ankh)
                        │
                        ▼
- [ ETAP 3: Czyszczenie i Audyt Danych (Cleanlab) ]
+ [ ETAP 3: Czyszczenie i Audyt Danych] trzeba przetransformować IC50 na log10(IC50) żeby uniknąć dominacji wysokich IC50, użyć cleanlab na wszytskich embedingach
                        │
                        ▼
  [ ETAP 4: Podział Danych (DataSAIL & Homology-aware Splitting) ]
                        │
                        ▼
- [ ETAP 5: Trenowanie i Eksperymenty z Modelami ML/DL ]
+ [ ETAP 5: Trenowanie i Eksperymenty z Modelami ML/DL czyli ablation studies ]
                        │
                        ▼
  [ ETAP 6: Ewaluacja, Wizualizacja i Porównanie (Wykresy & Heatmapa) czyli ablation studies ]
