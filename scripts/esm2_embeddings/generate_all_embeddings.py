@@ -1,16 +1,19 @@
 """
-Peptide Embedding Generation Pipeline with Optimized Memory Management.
+Peptide Embedding Generation Pipeline with Subprocess Memory Isolation.
 
 Features:
-- FP16 (half-precision) loading on CUDA.
-- Explicit PyTorch CUDA cache clearing & Garbage Collection.
-- Automatic resume (skips already generated .npy files).
-- Reduced batch sizes for large pLMs.
+- Subprocess Execution: Each pLM runs in an isolated Python process. When finished,
+  the OS reclaims 100% of allocated RAM/VRAM, completely eliminating memory leaks.
+- Automatic Resume: Skips models whose .npy embedding file already exists on disk.
+- Optimised Precision: FP16 on CUDA devices.
+- Conservative Batching: Batch size 1 for ProtT5-XL to avoid VRAM spikes.
 """
 
 from abc import ABC, abstractmethod
+import argparse
 import gc
 import os
+import subprocess
 import sys
 import traceback
 from typing import List, Optional
@@ -68,7 +71,6 @@ class ESMEmbeddingExtractor(BaseEmbeddingExtractor):
     def load_model(self) -> None:
         print(f"Loading ESM-2 model: {self.model_name}...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        
         dtype = torch.float16 if self.device.type == "cuda" else torch.float32
         self.model = AutoModel.from_pretrained(
             self.model_name, torch_dtype=dtype
@@ -83,7 +85,7 @@ class ESMEmbeddingExtractor(BaseEmbeddingExtractor):
 
         with torch.no_grad():
             outputs = self.model(**inputs)
-            last_hidden = outputs.last_hidden_state.float()  # convert to float32 for pooling
+            last_hidden = outputs.last_hidden_state.float()
             attention_mask = inputs["attention_mask"]
 
             mask_expanded = (
@@ -104,7 +106,6 @@ class ProtT5EmbeddingExtractor(BaseEmbeddingExtractor):
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name, do_lower_case=False
         )
-        
         dtype = torch.float16 if self.device.type == "cuda" else torch.float32
         self.model = T5EncoderModel.from_pretrained(
             self.model_name, torch_dtype=dtype
@@ -143,7 +144,6 @@ class AnkhEmbeddingExtractor(BaseEmbeddingExtractor):
     def load_model(self) -> None:
         print(f"Loading Ankh model: {self.model_name}...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        
         dtype = torch.float16 if self.device.type == "cuda" else torch.float32
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
             self.model_name, torch_dtype=dtype
@@ -246,15 +246,99 @@ def load_and_preprocess_dataset(
     return df
 
 
-def clear_memory():
-    """Forces garbage collection and flushes PyTorch CUDA memory cache."""
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+MODELS_CONFIG = [
+    {
+        "class": ESMEmbeddingExtractor,
+        "name": "facebook/esm2_t6_8M_UR50D",
+        "out_file": "esm2_8m_embeddings.npy",
+        "batch_size": 32,
+    },
+    {
+        "class": ESMEmbeddingExtractor,
+        "name": "facebook/esm2_t12_35M_UR50D",
+        "out_file": "esm2_35m_embeddings.npy",
+        "batch_size": 16,
+    },
+    {
+        "class": ESMEmbeddingExtractor,
+        "name": "facebook/esm2_t33_650M_UR50D",
+        "out_file": "esm2_650m_embeddings.npy",
+        "batch_size": 2,
+    },
+    {
+        "class": ProtT5EmbeddingExtractor,
+        "name": "Rostlab/prot_t5_xl_uniref50",
+        "out_file": "prott5_embeddings.npy",
+        "batch_size": 1,
+    },
+    {
+        "class": AnkhEmbeddingExtractor,
+        "name": "ElnaggarLab/ankh-base",
+        "out_file": "ankh_base_embeddings.npy",
+        "batch_size": 4,
+    },
+]
+
+
+def run_single_model(model_idx: int, base_dir: str):
+    """Runs embedding extraction for a single model index in isolation."""
+    output_dir = os.path.join(base_dir, "embeddings_data")
+    cleaned_csv = os.path.join(output_dir, "cleaned_peptides.csv")
+
+    config = MODELS_CONFIG[model_idx]
+    out_path = os.path.join(output_dir, config["out_file"])
+
+    if os.path.exists(out_path):
+        print(f"Skipping {config['name']} — Already generated: {out_path}")
+        return
+
+    print("\n" + "=" * 60)
+    print(f"Running isolated extraction process for: {config['name']}")
+
+    if not os.path.exists(cleaned_csv):
+        raise FileNotFoundError(f"Cleaned CSV dataset not found at: {cleaned_csv}")
+
+    df = pd.read_csv(cleaned_csv)
+    sequences = df["sequence"].tolist()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using compute device: {device.type.upper()}")
+
+    try:
+        extractor = config["class"](model_name=config["name"], device=device)
+        embeddings = extractor.extract_all(
+            sequences=sequences, batch_size=config["batch_size"]
+        )
+        np.save(out_path, embeddings)
+        print(
+            f"Successfully saved embeddings to {out_path} "
+            f"| Shape: {embeddings.shape}"
+        )
+    except Exception as err:
+        print(f"\n[ERROR] Failed processing model: {config['name']}")
+        print(f"Error details: {err}")
+        traceback.print_exc()
+        sys.exit(1)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Extract Peptide Embeddings.")
+    parser.add_argument(
+        "--model_idx",
+        type=int,
+        default=-1,
+        help="Index of specific model to process (-1 for runner mode)",
+    )
+    args = parser.parse_args()
+
     base_dir = "/home/marta/Pulpit/ACEpIC"
+
+    # Worker mode: execute only one model in this clean process
+    if args.model_idx >= 0:
+        run_single_model(args.model_idx, base_dir)
+        sys.exit(0)
+
+    # Master runner mode
     input_file = os.path.join(
         base_dir, "dataset/final/experimental_dataset.csv"
     )
@@ -263,85 +347,32 @@ def main():
 
     os.makedirs(output_dir, exist_ok=True)
 
+    # Preprocess dataset once
     try:
-        df = load_and_preprocess_dataset(input_file, cleaned_csv)
+        load_and_preprocess_dataset(input_file, cleaned_csv)
     except Exception as err:
         print(f"Failed to load dataset: {err}")
         traceback.print_exc()
         sys.exit(1)
 
-    sequences = df["sequence"].tolist()
+    script_path = os.path.abspath(__file__)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using compute device: {device.type.upper()}")
-
-    # Conservative batch sizes to avoid Memory Shortage
-    models_to_run = [
-        {
-            "class": ESMEmbeddingExtractor,
-            "name": "facebook/esm2_t6_8M_UR50D",
-            "out_file": "esm2_8m_embeddings.npy",
-            "batch_size": 32,
-        },
-        {
-            "class": ESMEmbeddingExtractor,
-            "name": "facebook/esm2_t12_35M_UR50D",
-            "out_file": "esm2_35m_embeddings.npy",
-            "batch_size": 16,
-        },
-        {
-            "class": ESMEmbeddingExtractor,
-            "name": "facebook/esm2_t33_650M_UR50D",
-            "out_file": "esm2_650m_embeddings.npy",
-            "batch_size": 4,
-        },
-        {
-            "class": ProtT5EmbeddingExtractor,
-            "name": "Rostlab/prot_t5_xl_uniref50",
-            "out_file": "prott5_embeddings.npy",
-            "batch_size": 2,
-        },
-        {
-            "class": AnkhEmbeddingExtractor,
-            "name": "ElnaggarLab/ankh-base",
-            "out_file": "ankh_base_embeddings.npy",
-            "batch_size": 8,
-        },
-    ]
-
-    for config in models_to_run:
-        print("\n" + "=" * 60)
+    # Sequentially launch a separate Python process for each model
+    for idx, config in enumerate(MODELS_CONFIG):
         out_path = os.path.join(output_dir, config["out_file"])
-
-        # Resume mechanism: Skip if already computed
         if os.path.exists(out_path):
-            print(f"Skipping {config['name']} — Output file already exists: {out_path}")
+            print(f"\n[SKIP] {config['out_file']} already exists in {output_dir}")
             continue
 
-        try:
-            extractor = config["class"](
-                model_name=config["name"], device=device
-            )
-            embeddings = extractor.extract_all(
-                sequences=sequences, batch_size=config["batch_size"]
-            )
-            np.save(out_path, embeddings)
-            print(
-                f"Successfully saved embeddings to {out_path} "
-                f"| Shape: {embeddings.shape}"
-            )
-        except Exception as err:
-            print(f"\n[ERROR] Failed processing model: {config['name']}")
-            print(f"Error details: {err}")
-            traceback.print_exc()
-        finally:
-            # Force cleanup after each model
-            if 'extractor' in locals():
-                del extractor
-            clear_memory()
+        cmd = [sys.executable, script_path, "--model_idx", str(idx)]
+        print(f"\nLaunch Subprocess -> Model #{idx}: {config['name']}")
+
+        res = subprocess.run(cmd)
+        if res.returncode != 0:
+            print(f"[WARNING] Subprocess for model #{idx} exited with code {res.returncode}")
 
     print("\n" + "=" * 60)
-    print(f"Execution finished. Check directory: {output_dir}")
+    print(f"All processing completed! Check directory: {output_dir}")
 
 
 if __name__ == "__main__":
