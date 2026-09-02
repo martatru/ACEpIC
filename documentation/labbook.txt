@@ -9,8 +9,7 @@ Continuous pIC50 Bioactivity Regression for Peptide Design
 --------------------------------------------------------------------------------
 Adapting and enhancing established machine learning architectures—such as
 transitioning pLM4ACE from a binary classification model into a continuous pIC50
-regression pipeline—is a standard, scientifically rigorous, and fully ethical
-practice in computational biology and computer science.
+regression pipeline—is a standard practice in computational biology and computer science.
 
 By properly attributing foundational works (e.g., the pLM4ACE framework) and
 clearly highlighting novelty, novel loss functions, and structural integrations,

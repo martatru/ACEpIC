@@ -5,7 +5,7 @@ Features:
 - Subprocess Execution: Each pLM runs in an isolated Python process. When finished,
   the OS reclaims 100% of allocated RAM/VRAM, completely eliminating memory leaks.
 - Automatic Resume: Skips models whose .npy embedding file already exists on disk.
-- Optimised Precision: FP16 on CUDA devices.
+- Optimised Precision: FP32 for Ankh to prevent NaN overflow issues; FP16 on CUDA devices for others.
 - Conservative Batching: Batch size 1 for ProtT5-XL to avoid VRAM spikes.
 """
 
@@ -144,7 +144,9 @@ class AnkhEmbeddingExtractor(BaseEmbeddingExtractor):
     def load_model(self) -> None:
         print(f"Loading Ankh model: {self.model_name}...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+        
+        # Enforce float32 to prevent float16 underflow/overflow NaNs
+        dtype = torch.float32
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
             self.model_name, torch_dtype=dtype
         ).to(self.device)
@@ -247,30 +249,30 @@ def load_and_preprocess_dataset(
 
 
 MODELS_CONFIG = [
-    {
-        "class": ESMEmbeddingExtractor,
-        "name": "facebook/esm2_t6_8M_UR50D",
-        "out_file": "esm2_8m_embeddings.npy",
-        "batch_size": 32,
-    },
-    {
-        "class": ESMEmbeddingExtractor,
-        "name": "facebook/esm2_t12_35M_UR50D",
-        "out_file": "esm2_35m_embeddings.npy",
-        "batch_size": 16,
-    },
-    {
-        "class": ESMEmbeddingExtractor,
-        "name": "facebook/esm2_t33_650M_UR50D",
-        "out_file": "esm2_650m_embeddings.npy",
-        "batch_size": 2,
-    },
-    {
-        "class": ProtT5EmbeddingExtractor,
-        "name": "Rostlab/prot_t5_xl_uniref50",
-        "out_file": "prott5_embeddings.npy",
-        "batch_size": 1,
-    },
+    # {
+    #     "class": ESMEmbeddingExtractor,
+    #     "name": "facebook/esm2_t6_8M_UR50D",
+    #     "out_file": "esm2_8m_embeddings.npy",
+    #     "batch_size": 32,
+    # },
+    # {
+    #     "class": ESMEmbeddingExtractor,
+    #     "name": "facebook/esm2_t12_35M_UR50D",
+    #     "out_file": "esm2_35m_embeddings.npy",
+    #     "batch_size": 16,
+    # },
+    # {
+    #     "class": ESMEmbeddingExtractor,
+    #     "name": "facebook/esm2_t33_650M_UR50D",
+    #     "out_file": "esm2_650m_embeddings.npy",
+    #     "batch_size": 2,
+    # },
+    # {
+    #     "class": ProtT5EmbeddingExtractor,
+    #     "name": "Rostlab/prot_t5_xl_uniref50",
+    #     "out_file": "prott5_embeddings.npy",
+    #     "batch_size": 1,
+    # },
     {
         "class": AnkhEmbeddingExtractor,
         "name": "ElnaggarLab/ankh-base",
