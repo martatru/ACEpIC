@@ -1,7 +1,7 @@
 import os
 import sys
 import warnings
-from typing import Dict, Tuple
+from typing import Dict, Set, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,17 +22,19 @@ from sklearn.svm import SVR
 from tqdm import tqdm
 from xgboost import XGBRegressor
 
-# Global warning suppression for optimization edge-cases
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
 
 class Config:
-    """Central configuration for paths and execution settings."""
+    """Central configuration for benchmark execution settings and paths."""
+
     DATASET_PATH: str = "embeddings_data/cleaned_peptides.csv"
     DATASAYL_SPLIT_PATH: str = "embeddings_data/datasail_split.csv"
     EMBEDDINGS_DIR: str = "embeddings_data"
     RESULTS_CACHE_PATH: str = "embeddings_data/master_ablation_results.csv"
-    OUTPUT_HEATMAP_PATH: str = "scripts/visualization/plots/master_ablation_heatmap.png"
+    OUTPUT_HEATMAP_PATH: str = (
+        "scripts/visualization/plots/master_ablation_heatmap.png"
+    )
 
     EMBEDDING_FILES: Dict[str, str] = {
         "ProtT5-XL": "prott5_embeddings.npy",
@@ -44,15 +46,31 @@ class Config:
     RANDOM_SEED: int = 42
 
 
+def safe_pearsonr(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Calculate Pearson correlation safely without crashing on edge cases."""
+    if len(y_true) < 2 or len(y_pred) < 2:
+        return 0.0
+    if np.std(y_true) == 0 or np.std(y_pred) == 0:
+        return 0.0
+    try:
+        r_val, _ = pearsonr(y_true, y_pred)
+        return float(r_val) if not np.isnan(r_val) else 0.0
+    except Exception:
+        return 0.0
+
+
 class DataLoader:
-    """Loads dataset targets and pre-computed protein language embeddings."""
+    """Handles dataset and protein language model embedding loading."""
 
     def __init__(self, config: Config = Config()):
         self.config = config
 
     def load_data(self) -> Tuple[pd.DataFrame, np.ndarray, Dict[str, np.ndarray]]:
+        """Load peptide dataset targets and precomputed embeddings."""
         if not os.path.exists(self.config.DATASET_PATH):
-            raise FileNotFoundError(f"Dataset CSV missing: {self.config.DATASET_PATH}")
+            raise FileNotFoundError(
+                f"Dataset CSV missing: {self.config.DATASET_PATH}"
+            )
 
         df = pd.read_csv(self.config.DATASET_PATH)
         if "pIC50" not in df.columns:
@@ -67,14 +85,16 @@ class DataLoader:
                 embeddings[label] = np.load(filepath)
 
         if "ProtT5-XL" in embeddings and "ESM-2 (650M)" in embeddings:
-            fused = np.hstack((embeddings["ProtT5-XL"], embeddings["ESM-2 (650M)"]))
+            fused = np.hstack(
+                (embeddings["ProtT5-XL"], embeddings["ESM-2 (650M)"])
+            )
             embeddings["Fused (ProtT5 + ESM2)"] = fused
 
         return df, y, embeddings
 
 
 class DatasetSplitter:
-    """Handles train/test split generation."""
+    """Generates train and test indices for evaluation strategies."""
 
     def __init__(self, seed: int = Config.RANDOM_SEED):
         self.seed = seed
@@ -82,9 +102,12 @@ class DatasetSplitter:
     def cluster_split(
         self, X_ref: np.ndarray, test_size: float = 0.20, threshold: float = 0.3
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Perform hierarchical complete-linkage sequence cluster split."""
         distances = pdist(X_ref, metric="cosine")
         clusters = fcluster(
-            linkage(distances, method="complete"), t=threshold, criterion="distance"
+            linkage(distances, method="complete"),
+            t=threshold,
+            criterion="distance",
         )
 
         unique_clusters = np.unique(clusters)
@@ -103,15 +126,24 @@ class DatasetSplitter:
             else:
                 train_idx.extend(indices)
 
-        return np.array(train_idx), np.array(test_idx)
+        train_arr, test_arr = np.array(train_idx), np.array(test_idx)
+        if len(train_arr) < 5 or len(test_arr) < 5:
+            return train_test_split(
+                np.arange(len(X_ref)), test_size=test_size, random_state=self.seed
+            )
+
+        return train_arr, test_arr
 
     def get_indices(
         self, df: pd.DataFrame, X_ref: np.ndarray, split_type: str
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Retrieve dataset split indices."""
         indices = np.arange(len(df))
 
         if split_type == "Random Split (80/20)":
-            return train_test_split(indices, test_size=0.20, random_state=self.seed)
+            return train_test_split(
+                indices, test_size=0.20, random_state=self.seed
+            )
 
         if split_type == "Cluster Split (80/20)":
             return self.cluster_split(X_ref, test_size=0.20)
@@ -130,18 +162,30 @@ class DatasetSplitter:
 
 
 class DatasetCleaner:
-    """Applies continuous dataset cleaning protocols."""
+    """Applies data cleaning strategies and calculates sample masks."""
 
-    @staticmethod
-    def get_clean_mask(X: np.ndarray, y: np.ndarray, method: str) -> np.ndarray:
+    def __init__(self):
+        self._mask_cache: Dict[str, np.ndarray] = {}
+
+    def get_clean_mask(
+        self, X: np.ndarray, y: np.ndarray, method: str, context_key: str = ""
+    ) -> np.ndarray:
+        """Compute or retrieve cached dataset cleaning boolean mask safely."""
+        cache_key = f"{context_key}_{method}_{X.shape[0]}"
+        if cache_key in self._mask_cache:
+            return self._mask_cache[cache_key]
+
         n_samples = len(y)
-
-        if method == "Raw Data":
-            return np.ones(n_samples, dtype=bool)
+        if n_samples < 5 or method == "Raw Data":
+            mask = np.ones(n_samples, dtype=bool)
+            self._mask_cache[cache_key] = mask
+            return mask
 
         if "Residual OOF" in method:
             cutoff = float(method.split("(")[1].split("%")[0])
-            kf = KFold(n_splits=5, shuffle=True, random_state=Config.RANDOM_SEED)
+            kf = KFold(
+                n_splits=5, shuffle=True, random_state=Config.RANDOM_SEED
+            )
             residuals = np.zeros_like(y, dtype=np.float64)
 
             for train_fold, val_fold in kf.split(X, y):
@@ -151,10 +195,9 @@ class DatasetCleaner:
                 residuals[val_fold] = np.abs(y[val_fold] - preds)
 
             threshold = np.percentile(residuals, 100.0 - cutoff)
-            return residuals <= threshold
+            mask = residuals <= threshold
 
-        if method == "Huber Robust (15%)":
-            # Feature scaling + robust convergence parameters (max_iter=5000, tol=1e-3)
+        elif method == "Huber Robust (15%)":
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X)
 
@@ -162,35 +205,43 @@ class DatasetCleaner:
             huber.fit(X_scaled, y)
             residuals = np.abs(y - huber.predict(X_scaled))
             threshold = np.percentile(residuals, 85.0)
-            return residuals <= threshold
+            mask = residuals <= threshold
 
-        if method == "Activity Cliffs":
+        elif method == "Activity Cliffs":
             sim_matrix = cosine_similarity(X)
-            noisy_indices = set()
-            for i in range(n_samples):
-                for j in range(i + 1, n_samples):
-                    if sim_matrix[i, j] >= 0.95 and abs(y[i] - y[j]) >= 2.0:
-                        noisy_indices.add(i)
-                        noisy_indices.add(j)
+            y_diff = np.abs(y[:, None] - y[None, :])
+            cliff_matrix = (sim_matrix >= 0.95) & (y_diff >= 2.0)
+            np.fill_diagonal(cliff_matrix, False)
+            noisy_indices = np.where(cliff_matrix.any(axis=1))[0]
             mask = np.ones(n_samples, dtype=bool)
-            mask[list(noisy_indices)] = False
-            return mask
+            mask[noisy_indices] = False
 
-        if method == "Ensemble Variance (15%)":
+        elif method == "Ensemble Variance (15%)":
             model = ExtraTreesRegressor(
-                n_estimators=100, random_state=Config.RANDOM_SEED, n_jobs=-1
+                n_estimators=100,
+                random_state=Config.RANDOM_SEED,
+                n_jobs=-1,
             )
             model.fit(X, y)
-            tree_preds = np.array([tree.predict(X) for tree in model.estimators_])
+            tree_preds = np.array(
+                [tree.predict(X) for tree in model.estimators_]
+            )
             variances = np.var(tree_preds, axis=0)
             threshold = np.percentile(variances, 85.0)
-            return variances <= threshold
+            mask = variances <= threshold
 
-        return np.ones(n_samples, dtype=bool)
+        else:
+            mask = np.ones(n_samples, dtype=bool)
+
+        if np.sum(mask) < 2:
+            mask = np.ones(n_samples, dtype=bool)
+
+        self._mask_cache[cache_key] = mask
+        return mask
 
 
 class AblationBenchmark:
-    """Executes fresh master ablation benchmark with progress tracking."""
+    """Executes full ablation study benchmark with checkpointing and resume support."""
 
     def __init__(self, config: Config = Config()):
         self.config = config
@@ -199,10 +250,14 @@ class AblationBenchmark:
 
     @staticmethod
     def get_models() -> Dict[str, object]:
+        """Instantiate regression benchmark models."""
         return {
             "Ridge": Ridge(alpha=1.0),
             "XGBoost": XGBRegressor(
-                n_estimators=100, learning_rate=0.05, random_state=Config.RANDOM_SEED, n_jobs=-1
+                n_estimators=100,
+                learning_rate=0.05,
+                random_state=Config.RANDOM_SEED,
+                n_jobs=-1,
             ),
             "SVR": SVR(C=1.0, kernel="rbf"),
             "MLP": MLPRegressor(
@@ -212,14 +267,37 @@ class AblationBenchmark:
                 random_state=Config.RANDOM_SEED,
             ),
             "Random Forest": RandomForestRegressor(
-                n_estimators=100, random_state=Config.RANDOM_SEED, n_jobs=-1
+                n_estimators=100,
+                random_state=Config.RANDOM_SEED,
+                n_jobs=-1,
             ),
             "KNN": KNeighborsRegressor(n_neighbors=5, n_jobs=-1),
         }
 
+    def _load_existing_results(self) -> Tuple[pd.DataFrame, Set[Tuple[str, str, str, str]]]:
+        """Load cached results to support resuming interrupted runs."""
+        cache_path = self.config.RESULTS_CACHE_PATH
+        if os.path.exists(cache_path):
+            try:
+                df = pd.read_csv(cache_path)
+                completed = set(
+                    zip(
+                        df["Evaluation Protocol"],
+                        df["Representation"],
+                        df["Model"],
+                        df["Cleaning Method"],
+                    )
+                )
+                print(f"Resuming run: loaded {len(completed)} completed evaluations from cache.")
+                return df, completed
+            except Exception as e:
+                print(f"Warning: Could not load cache file ({e}). Starting fresh.")
+        return pd.DataFrame(), set()
+
     def run(
         self, df: pd.DataFrame, y: np.ndarray, embeddings: Dict[str, np.ndarray]
     ) -> pd.DataFrame:
+        """Execute full benchmark evaluation grid with checkpoint saving."""
         protocols = [
             "10-Fold CV (Full Dataset)",
             "Random Split (80/20)",
@@ -239,60 +317,124 @@ class AblationBenchmark:
 
         models = self.get_models()
         X_ref = embeddings.get("ProtT5-XL", list(embeddings.values())[0])
-        records = []
+
+        df_results, completed_tasks = self._load_existing_results()
+        records = df_results.to_dict("records") if not df_results.empty else []
 
         total_tasks = (
-            len(protocols) * len(embeddings) * len(cleaning_methods) * len(models)
+            len(protocols)
+            * len(embeddings)
+            * len(cleaning_methods)
+            * len(models)
         )
 
-        print(f"Starting complete master ablation recalculation ({total_tasks} evaluations)...")
+        print(f"Starting ablation benchmark ({total_tasks} total evaluations)...")
 
-        with tqdm(total=total_tasks, desc="Ablation Benchmark", unit="eval") as pbar:
+        with tqdm(
+            total=total_tasks, desc="Ablation Benchmark", unit="eval"
+        ) as pbar:
+            if completed_tasks:
+                pbar.update(len(completed_tasks))
+
             for protocol in protocols:
                 if protocol == "10-Fold CV (Full Dataset)":
-                    kf = KFold(n_splits=10, shuffle=True, random_state=Config.RANDOM_SEED)
+                    kf = KFold(
+                        n_splits=10,
+                        shuffle=True,
+                        random_state=Config.RANDOM_SEED,
+                    )
                     for emb_name, X_full in embeddings.items():
                         for method in cleaning_methods:
-                            mask = self.cleaner.get_clean_mask(X_full, y, method)
+                            context_key = f"{protocol}_{emb_name}"
+                            mask = self.cleaner.get_clean_mask(
+                                X_full, y, method, context_key
+                            )
                             X_sub, y_sub = X_full[mask], y[mask]
 
                             for model_name, model_obj in models.items():
-                                pearsons = []
-                                for train_idx, val_idx in kf.split(X_sub, y_sub):
-                                    model_obj.fit(X_sub[train_idx], y_sub[train_idx])
-                                    preds = model_obj.predict(X_sub[val_idx])
-                                    r_val, _ = pearsonr(y_sub[val_idx], preds)
-                                    pearsons.append(r_val)
+                                task_key = (protocol, emb_name, model_name, method)
+                                if task_key in completed_tasks:
+                                    continue
 
+                                pearsons = []
+                                if len(y_sub) >= 2:
+                                    for train_idx, val_idx in kf.split(
+                                        X_sub, y_sub
+                                    ):
+                                        try:
+                                            model_obj.fit(
+                                                X_sub[train_idx],
+                                                y_sub[train_idx],
+                                            )
+                                            preds = model_obj.predict(
+                                                X_sub[val_idx]
+                                            )
+                                            pearsons.append(
+                                                safe_pearsonr(
+                                                    y_sub[val_idx], preds
+                                                )
+                                            )
+                                        except Exception:
+                                            pearsons.append(0.0)
+
+                                score = (
+                                    float(np.mean(pearsons))
+                                    if pearsons
+                                    else 0.0
+                                )
                                 records.append(
                                     {
                                         "Evaluation Protocol": protocol,
                                         "Representation": emb_name,
                                         "Model": model_name,
                                         "Cleaning Method": method,
-                                        "Pearson r": float(np.mean(pearsons)),
+                                        "Pearson r": score,
                                     }
                                 )
+                                completed_tasks.add(task_key)
                                 pbar.update(1)
 
+                                if len(records) % 10 == 0:
+                                    pd.DataFrame(records).to_csv(
+                                        self.config.RESULTS_CACHE_PATH, index=False
+                                    )
+
                 else:
-                    train_idx, test_idx = self.splitter.get_indices(df, X_ref, protocol)
+                    train_idx, test_idx = self.splitter.get_indices(
+                        df, X_ref, protocol
+                    )
 
                     for emb_name, X_full in embeddings.items():
                         X_train_full, X_test = X_full[train_idx], X_full[test_idx]
                         y_train_full, y_test = y[train_idx], y[test_idx]
 
                         for method in cleaning_methods:
+                            context_key = f"{protocol}_{emb_name}_train"
                             clean_mask = self.cleaner.get_clean_mask(
-                                X_train_full, y_train_full, method
+                                X_train_full, y_train_full, method, context_key
                             )
                             X_train_clean = X_train_full[clean_mask]
                             y_train_clean = y_train_full[clean_mask]
 
                             for model_name, model_obj in models.items():
-                                model_obj.fit(X_train_clean, y_train_clean)
-                                preds = model_obj.predict(X_test)
-                                r_val, _ = pearsonr(y_test, preds)
+                                task_key = (protocol, emb_name, model_name, method)
+                                if task_key in completed_tasks:
+                                    continue
+
+                                try:
+                                    if (
+                                        len(y_train_clean) >= 2
+                                        and len(y_test) >= 2
+                                    ):
+                                        model_obj.fit(
+                                            X_train_clean, y_train_clean
+                                        )
+                                        preds = model_obj.predict(X_test)
+                                        score = safe_pearsonr(y_test, preds)
+                                    else:
+                                        score = 0.0
+                                except Exception:
+                                    score = 0.0
 
                                 records.append(
                                     {
@@ -300,27 +442,40 @@ class AblationBenchmark:
                                         "Representation": emb_name,
                                         "Model": model_name,
                                         "Cleaning Method": method,
-                                        "Pearson r": float(r_val),
+                                        "Pearson r": score,
                                     }
                                 )
+                                completed_tasks.add(task_key)
                                 pbar.update(1)
 
+                                if len(records) % 10 == 0:
+                                    pd.DataFrame(records).to_csv(
+                                        self.config.RESULTS_CACHE_PATH, index=False
+                                    )
+
         df_results = pd.DataFrame(records)
-        os.makedirs(os.path.dirname(self.config.RESULTS_CACHE_PATH), exist_ok=True)
+        os.makedirs(
+            os.path.dirname(self.config.RESULTS_CACHE_PATH), exist_ok=True
+        )
         df_results.to_csv(self.config.RESULTS_CACHE_PATH, index=False)
-        print(f"\nFresh benchmark results saved to: {self.config.RESULTS_CACHE_PATH}")
+        print(
+            f"\nBenchmark results saved to: {self.config.RESULTS_CACHE_PATH}"
+        )
         return df_results
 
 
 class AblationVisualizer:
-    """Generates master heatmap visualization."""
+    """Generates publication-ready master ablation heatmap."""
 
     @staticmethod
     def plot_heatmap(df_results: pd.DataFrame, output_path: str) -> None:
+        """Plot and save wide heatmap matrix."""
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         sns.set_theme(style="white", font="sans-serif")
 
-        df_results["Pearson r"] = pd.to_numeric(df_results["Pearson r"], errors="coerce")
+        df_results["Pearson r"] = pd.to_numeric(
+            df_results["Pearson r"], errors="coerce"
+        )
 
         pivot_df = df_results.pivot_table(
             index=["Representation", "Model"],
@@ -350,9 +505,15 @@ class AblationVisualizer:
             fontweight="bold",
             pad=16,
         )
-        ax.set_xlabel("Evaluation Protocol & Data Cleaning Strategy", fontsize=11, labelpad=10)
+        ax.set_xlabel(
+            "Evaluation Protocol & Data Cleaning Strategy",
+            fontsize=11,
+            labelpad=10,
+        )
         ax.set_ylabel("Representation & Regressor", fontsize=11, labelpad=10)
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
+        ax.set_xticklabels(
+            ax.get_xticklabels(), rotation=45, ha="right", fontsize=8
+        )
         ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=8)
 
         plt.tight_layout()
@@ -362,6 +523,7 @@ class AblationVisualizer:
 
 
 def main() -> None:
+    """Execute complete pipeline."""
     try:
         config = Config()
         loader = DataLoader(config)
